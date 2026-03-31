@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/caddyserver/certmagic"
+	"github.com/getsops/sops/v3/age"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddytest"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
-	"github.com/caddyserver/certmagic"
-	"github.com/getsops/sops/v3/age"
 )
 
 func must(k *age.MasterKey, e error) *age.MasterKey {
@@ -32,7 +33,7 @@ const (
 )
 
 func TestStorageWithAgeEncryption(t *testing.T) {
-	if err := os.Mkdir(dataDir, 0755); err != nil {
+	if err := os.Mkdir(dataDir, 0o755); err != nil {
 		t.Errorf("error creating data dir: %s", err)
 		t.FailNow()
 		return
@@ -188,10 +189,10 @@ func TestLoadCorruptedData(t *testing.T) {
 
 	// Write garbage directly to the backend file so Load's decryption fails
 	keyPath := filepath.Join(dir, "corrupted-key")
-	if err := os.MkdirAll(filepath.Dir(keyPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(keyPath, []byte("not valid encrypted json"), 0644); err != nil {
+	if err := os.WriteFile(keyPath, []byte("not valid encrypted json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,7 +229,7 @@ func TestLoadTamperedMAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(keyPath, tampered, 0644); err != nil {
+	if err := os.WriteFile(keyPath, tampered, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -403,6 +404,5 @@ func TestCaddyfileAdaptToJSON(t *testing.T) {
 				t.Errorf("failed to adapt test case number '%d', named '%s'", i, tc.name)
 			}
 		})
-
 	}
 }
