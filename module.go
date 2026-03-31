@@ -10,7 +10,6 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/aes"
-	"github.com/getsops/sops/v3/cmd/sops/common"
 	"github.com/getsops/sops/v3/keys"
 	"github.com/getsops/sops/v3/keyservice"
 	jsonstore "github.com/getsops/sops/v3/stores/json"
@@ -42,7 +41,7 @@ type KeyServiceClientProvider interface {
 	KeyServiceClient() keyservice.KeyServiceClient
 }
 
-// Storage is the impelementation of certmagic.Storage interface for Caddy with encryption/decryption layer
+// Storage is the implementation of certmagic.Storage interface for Caddy with encryption/decryption layer
 // using [SOPS](https://github.com/getsops/sops). The module accepts any Caddy storage module as the backend.
 type Storage struct {
 	// The backing storage where the encrypted data is stored.
@@ -130,18 +129,29 @@ func (s *Storage) Load(ctx context.Context, key string) ([]byte, error) {
 
 	tree, err := s.store.LoadEncryptedFile(bs)
 	if err != nil {
-		return nil, fmt.Errorf("error loading encrypted file: %s", err)
+		return nil, fmt.Errorf("error loading encrypted file: %w", err)
 	}
 	tree.FilePath = key
 
-	_, err = common.DecryptTree(common.DecryptTreeOpts{
-		Tree:        &tree,
-		KeyServices: s.keyServiceClients,
-		IgnoreMac:   false,
-		Cipher:      aes.NewCipher(),
-	})
+	cipher := aes.NewCipher()
+	dataKey, err := tree.Metadata.GetDataKeyWithKeyServices(s.keyServiceClients, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error decrypting tree: %s", err)
+		return nil, fmt.Errorf("error retrieving data key: %w", err)
+	}
+	computedMac, err := tree.Decrypt(dataKey, cipher)
+	if err != nil {
+		return nil, fmt.Errorf("error decrypting tree: %w", err)
+	}
+	fileMac, err := cipher.Decrypt(
+		tree.Metadata.MessageAuthenticationCode,
+		dataKey,
+		tree.Metadata.LastModified.Format(time.RFC3339),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("cannot verify MAC: %w", err)
+	}
+	if fileMac != computedMac {
+		return nil, fmt.Errorf("MAC mismatch")
 	}
 
 	return s.store.EmitPlainFile(tree.Branches)
@@ -156,7 +166,7 @@ func (s *Storage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, erro
 func (s *Storage) Store(ctx context.Context, key string, value []byte) error {
 	branches, err := s.store.LoadPlainFile(value)
 	if err != nil {
-		return nil
+		return fmt.Errorf("error loading plain file for encryption: %w", err)
 	}
 
 	if len(branches) < 1 {
@@ -168,22 +178,28 @@ func (s *Storage) Store(ctx context.Context, key string, value []byte) error {
 	tree := sops.Tree{
 		Branches: branches,
 		Metadata: sops.Metadata{
-			LastModified: time.Now().UTC(),
-			KeyGroups:    s.keyGroups,
+			KeyGroups: s.keyGroups,
 		},
 		FilePath: key,
 	}
 
 	dataKey, errs := tree.GenerateDataKeyWithKeyServices(s.keyServiceClients)
 	if len(errs) > 0 {
-		return fmt.Errorf("could not generate data key: %s", errs)
+		return fmt.Errorf("could not generate data key: %w", errors.Join(errs...))
 	}
-	if err := common.EncryptTree(common.EncryptTreeOpts{
-		Tree:    &tree,
-		Cipher:  cipher,
-		DataKey: dataKey,
-	}); err != nil {
-		return err
+
+	unencryptedMac, err := tree.Encrypt(dataKey, cipher)
+	if err != nil {
+		return fmt.Errorf("error encrypting tree: %w", err)
+	}
+	tree.Metadata.LastModified = time.Now().UTC()
+	tree.Metadata.MessageAuthenticationCode, err = cipher.Encrypt(
+		unencryptedMac,
+		dataKey,
+		tree.Metadata.LastModified.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("error encrypting MAC: %w", err)
 	}
 
 	encryptedFile, err := s.store.EmitEncryptedFile(tree)
