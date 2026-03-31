@@ -55,10 +55,9 @@ func (a *Age) Provision(ctx caddy.Context) error {
 	a.TeamID = r.ReplaceKnown(a.TeamID, "")
 
 	if a.IdentitySource != "" {
-		return a.provisionFromCredentialStore(r)
+		return a.provisionFromCredentialStore()
 	}
 
-	// Original flow (unchanged)
 	mk, err := age.MasterKeyFromRecipient(a.Recipient)
 	if err != nil {
 		return err
@@ -79,7 +78,11 @@ func (a *Age) Provision(ctx caddy.Context) error {
 }
 
 // provisionFromCredentialStore handles identity retrieval from the OS credential store.
-func (a *Age) provisionFromCredentialStore(_ *caddy.Replacer) error {
+func (a *Age) provisionFromCredentialStore() error {
+	if a.IdentitySource != "keychain" {
+		return fmt.Errorf("unsupported identity_source %q; supported values: keychain",
+			a.IdentitySource)
+	}
 	if len(a.Identities) > 0 {
 		return fmt.Errorf("identity and identity_source are mutually exclusive; " +
 			"use one or the other, not both")
@@ -88,28 +91,20 @@ func (a *Age) provisionFromCredentialStore(_ *caddy.Replacer) error {
 		return fmt.Errorf("recipient and identity_source are mutually exclusive; " +
 			"the recipient is derived from the identity in the credential store")
 	}
-	if a.IdentitySource != "keychain" {
-		return fmt.Errorf("unsupported identity_source %q; supported values: keychain",
-			a.IdentitySource)
-	}
 
 	store, err := credstore.New(a.TeamID)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
 
-	// Try to find an existing identity in the credential store
 	identityBytes, account, err := store.GetFirst(credstore.ServiceName)
-	if err != nil && !errors.Is(err, credstore.ErrNotFound) {
+	if errors.Is(err, credstore.ErrNotFound) {
+		return a.bootstrapKeychainIdentity(store)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to search credential store: %w", err)
 	}
 
-	if errors.Is(err, credstore.ErrNotFound) {
-		// Bootstrap: generate new keypair and store it
-		return a.bootstrapKeychainIdentity(store)
-	}
-
-	// Found existing identity
 	a.logger.Info("Using existing age identity from credential store",
 		zap.String("account", account))
 	return a.applyKeychainIdentity(string(identityBytes))

@@ -86,7 +86,7 @@ func goBytes(ref C.CFDataRef) []byte {
 	return C.GoBytes(unsafe.Pointer(ptr), C.int(length))
 }
 
-// goString converts a CFStringRef to a Go string. Returns "" if ref is 0.
+// goStringFromCF converts a CFStringRef to a Go string. Returns "" if ref is 0.
 func goStringFromCF(ref C.CFStringRef) string {
 	if ref == 0 {
 		return ""

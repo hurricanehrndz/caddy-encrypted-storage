@@ -13,7 +13,7 @@ test:
 
 caddy: build/darwin/caddy
 build/darwin/caddy:
-	test -f $(@D) || mkdir -p $(@D)
+	test -d $(@D) || mkdir -p $(@D)
 	CGO_ENABLED=1 go tool -modfile=tools.mod xcaddy build \
 		--output $(@) \
 		--with github.com/mohammed90/caddy-encrypted-storage=.
@@ -21,7 +21,7 @@ build/darwin/caddy:
 # Build with team ID for macOS keychain ACL (replace SBSSF9BESA with your Apple Team ID)
 caddy-signed: build/darwin/caddy-signed
 build/darwin/caddy-signed:
-	test -f $(@D) || mkdir -p $(@D)
+	test -d $(@D) || mkdir -p $(@D)
 	CGO_ENABLED=1 go tool -modfile=tools.mod xcaddy build \
 		--output $(@) \
 		--with github.com/mohammed90/caddy-encrypted-storage=. \

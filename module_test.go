@@ -497,8 +497,19 @@ func TestAgeKeychainRecipientMutualExclusion(t *testing.T) {
 	}
 }
 
-func TestAgeCaddyfileMutualExclusionIdentityFirst(t *testing.T) {
-	input := `{
+func TestAgeCaddyfileMutualExclusion(t *testing.T) {
+	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cfgAdapter == nil {
+		t.Fatal("caddyfile adapter not found")
+	}
+
+	testcases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name: "identity then identity_source",
+			input: `{
 	storage encrypted {
 		backend file_system {
 			root /var/caddy/storage
@@ -512,19 +523,11 @@ func TestAgeCaddyfileMutualExclusionIdentityFirst(t *testing.T) {
 		}
 	}
 }
-`
-	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cfgAdapter == nil {
-		t.Fatal("caddyfile adapter not found")
-	}
-	_, _, err := cfgAdapter.Adapt([]byte(input), nil)
-	if err == nil {
-		t.Fatal("expected error when both identity and identity_source are in Caddyfile")
-	}
-}
-
-func TestAgeCaddyfileMutualExclusionSourceFirst(t *testing.T) {
-	input := `{
+`,
+		},
+		{
+			name: "identity_source then identity",
+			input: `{
 	storage encrypted {
 		backend file_system {
 			root /var/caddy/storage
@@ -538,19 +541,11 @@ func TestAgeCaddyfileMutualExclusionSourceFirst(t *testing.T) {
 		}
 	}
 }
-`
-	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cfgAdapter == nil {
-		t.Fatal("caddyfile adapter not found")
-	}
-	_, _, err := cfgAdapter.Adapt([]byte(input), nil)
-	if err == nil {
-		t.Fatal("expected error when both identity_source and identity are in Caddyfile")
-	}
-}
-
-func TestAgeCaddyfileMutualExclusionRecipientThenSource(t *testing.T) {
-	input := `{
+`,
+		},
+		{
+			name: "recipient then identity_source",
+			input: `{
 	storage encrypted {
 		backend file_system {
 			root /var/caddy/storage
@@ -563,19 +558,11 @@ func TestAgeCaddyfileMutualExclusionRecipientThenSource(t *testing.T) {
 		}
 	}
 }
-`
-	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cfgAdapter == nil {
-		t.Fatal("caddyfile adapter not found")
-	}
-	_, _, err := cfgAdapter.Adapt([]byte(input), nil)
-	if err == nil {
-		t.Fatal("expected error when both recipient and identity_source are in Caddyfile")
-	}
-}
-
-func TestAgeCaddyfileMutualExclusionSourceThenRecipient(t *testing.T) {
-	input := `{
+`,
+		},
+		{
+			name: "identity_source then recipient",
+			input: `{
 	storage encrypted {
 		backend file_system {
 			root /var/caddy/storage
@@ -588,13 +575,16 @@ func TestAgeCaddyfileMutualExclusionSourceThenRecipient(t *testing.T) {
 		}
 	}
 }
-`
-	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
-	if cfgAdapter == nil {
-		t.Fatal("caddyfile adapter not found")
+`,
+		},
 	}
-	_, _, err := cfgAdapter.Adapt([]byte(input), nil)
-	if err == nil {
-		t.Fatal("expected error when both identity_source and recipient are in Caddyfile")
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := cfgAdapter.Adapt([]byte(tc.input), nil)
+			if err == nil {
+				t.Fatal("expected mutual exclusion error")
+			}
+		})
 	}
 }
