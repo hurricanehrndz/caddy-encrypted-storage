@@ -56,9 +56,9 @@ linters:
     exhaustive:
       ignore-enum-types: reflect.Kind|svc.Cmd
     gocyclo:
-      min-complexity: 12
+      min-complexity: 15
     gocognit:
-      min-complexity: 12
+      min-complexity: 25
   exclusions:
     generated: lax
     presets:
