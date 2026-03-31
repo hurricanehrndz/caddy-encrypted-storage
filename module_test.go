@@ -32,6 +32,11 @@ const (
 	dataDir   = "test-ground"
 )
 
+func jsonPath(p string) string {
+	b, _ := json.Marshal(p)
+	return string(b[1 : len(b)-1]) // strip surrounding quotes
+}
+
 func TestStorageWithAgeEncryption(t *testing.T) {
 	if err := os.Mkdir(dataDir, 0o755); err != nil {
 		t.Errorf("error creating data dir: %s", err)
@@ -43,7 +48,7 @@ func TestStorageWithAgeEncryption(t *testing.T) {
 	})
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
 	s := Storage{
-		RawBackend: json.RawMessage(fmt.Sprintf(`{"module": "file_system", "root": "%s"}`, dataDir)),
+		RawBackend: json.RawMessage(fmt.Sprintf(`{"module": "file_system", "root": "%s"}`, jsonPath(dataDir))),
 		Encryption: []json.RawMessage{json.RawMessage(fmt.Sprintf(`{"provider":"local", "keys": [{"type":"age", "recipient": "%s", "identities": ["%s"]}]}`, recipient, ageId))},
 	}
 	if err := s.Provision(ctx); err != nil {
@@ -105,7 +110,7 @@ func provisionTestStorage(t *testing.T) (*Storage, string) {
 	dir := t.TempDir()
 	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
 	s := Storage{
-		RawBackend: json.RawMessage(fmt.Sprintf(`{"module": "file_system", "root": "%s"}`, dir)),
+		RawBackend: json.RawMessage(fmt.Sprintf(`{"module": "file_system", "root": "%s"}`, jsonPath(dir))),
 		Encryption: []json.RawMessage{json.RawMessage(fmt.Sprintf(`{"provider":"local", "keys": [{"type":"age", "recipient": "%s", "identities": ["%s"]}]}`, recipient, ageId))},
 	}
 	if err := s.Provision(ctx); err != nil {
