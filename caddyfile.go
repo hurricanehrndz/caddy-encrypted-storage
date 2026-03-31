@@ -94,22 +94,78 @@ func (s *Age) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for nesting := d.Nesting(); d.NextBlock(nesting); {
 		switch d.Val() {
 		case "recipient":
-			if !d.NextArg() {
-				return d.ArgErr()
+			if err := s.parseRecipient(d); err != nil {
+				return err
 			}
-			if len(s.Recipient) > 0 {
-				return d.Err("recipient already specified")
-			}
-			s.Recipient = d.Val()
 		case "identity":
-			if !d.NextArg() {
-				return d.ArgErr()
+			if err := s.parseIdentity(d); err != nil {
+				return err
 			}
-			s.Identities = append(s.Identities, d.Val())
+		case "identity_source":
+			if err := s.parseIdentitySource(d); err != nil {
+				return err
+			}
+		case "team_id":
+			if err := s.parseTeamID(d); err != nil {
+				return err
+			}
 		default:
 			return d.Errf("unrecognized parameter '%s'", d.Val())
 		}
 	}
+	return nil
+}
+
+func (s *Age) parseRecipient(d *caddyfile.Dispenser) error {
+	if len(s.IdentitySource) > 0 {
+		return d.Err("recipient and identity_source are mutually exclusive")
+	}
+	if !d.NextArg() {
+		return d.ArgErr()
+	}
+	if len(s.Recipient) > 0 {
+		return d.Err("recipient already specified")
+	}
+	s.Recipient = d.Val()
+	return nil
+}
+
+func (s *Age) parseIdentity(d *caddyfile.Dispenser) error {
+	if len(s.IdentitySource) > 0 {
+		return d.Err("identity and identity_source are mutually exclusive")
+	}
+	if !d.NextArg() {
+		return d.ArgErr()
+	}
+	s.Identities = append(s.Identities, d.Val())
+	return nil
+}
+
+func (s *Age) parseIdentitySource(d *caddyfile.Dispenser) error {
+	if !d.NextArg() {
+		return d.ArgErr()
+	}
+	if len(s.IdentitySource) > 0 {
+		return d.Err("identity_source already specified")
+	}
+	if len(s.Identities) > 0 {
+		return d.Err("identity and identity_source are mutually exclusive")
+	}
+	if len(s.Recipient) > 0 {
+		return d.Err("recipient and identity_source are mutually exclusive")
+	}
+	s.IdentitySource = d.Val()
+	return nil
+}
+
+func (s *Age) parseTeamID(d *caddyfile.Dispenser) error {
+	if !d.NextArg() {
+		return d.ArgErr()
+	}
+	if len(s.TeamID) > 0 {
+		return d.Err("team_id already specified")
+	}
+	s.TeamID = d.Val()
 	return nil
 }
 
