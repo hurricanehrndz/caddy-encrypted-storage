@@ -16,8 +16,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - uses: actions/setup-python@v3
-      - uses: pre-commit/action@v3.0.1
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -27,8 +25,8 @@ jobs:
         run: go mod download
       - name: Download tools
         run: go mod download -modfile=tools.mod
-      - name: Run make lint
-        run: make lint
+      - uses: actions/setup-python@v3
+      - uses: pre-commit/action@v3.0.1
       - name: Check formatting
         run: |
           make format
