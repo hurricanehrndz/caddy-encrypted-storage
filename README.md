@@ -105,6 +105,57 @@ https://example.com {
 }
 ```
 
+### OS Keychain Identity
+
+Instead of embedding age private keys in your configuration, you can store them in the OS credential store (macOS Keychain or Windows Credential Manager). On first run, a new age keypair is automatically generated and stored; subsequent runs retrieve the existing identity.
+
+```caddyfile
+{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				identity_source keychain
+			}
+		}
+	}
+}
+https://example.com {
+	respond "Howdy!"
+}
+```
+
+The `identity_source keychain` directive is mutually exclusive with `recipient` and `identity` — the recipient is derived automatically from the stored identity.
+
+> **Note:** On macOS, this requires building with `CGO_ENABLED=1`. On unsupported platforms, a clear error is returned.
+
+The equivalent JSON configuration:
+
+```json
+{
+	"storage": {
+		"module": "encrypted",
+		"backend": {
+			"module": "file_system",
+			"root": "/var/caddy/storage"
+		},
+		"encryption": [
+			{
+				"provider": "local",
+				"keys": [
+					{
+						"type": "age",
+						"identity_source": "keychain"
+					}
+				]
+			}
+		]
+	}
+}
+```
+
 ### JSON
 
 The simplest configuration of this module can be as follows:
