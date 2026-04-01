@@ -13,7 +13,7 @@ test:
 
 caddy: build/darwin/caddy
 build/darwin/caddy:
-	test -f $(@D) || mkdir -p $(@D)
+	test -d $(@D) || mkdir -p $(@D)
 	CGO_ENABLED=1 go tool -modfile=tools.mod xcaddy build \
 		--output $(@) \
 		--with github.com/mohammed90/caddy-encrypted-storage=.

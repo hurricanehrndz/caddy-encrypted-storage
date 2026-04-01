@@ -3,8 +3,10 @@ module github.com/mohammed90/caddy-encrypted-storage
 go 1.26.0
 
 require (
+	filippo.io/age v1.2.1
 	github.com/caddyserver/caddy/v2 v2.11.2
 	github.com/caddyserver/certmagic v0.25.2
+	github.com/danieljoos/wincred v1.2.2
 	github.com/getsops/sops/v3 v3.10.2
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.79.1
@@ -14,7 +16,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
 	cloud.google.com/go/kms v1.25.0 // indirect
-	filippo.io/age v1.2.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.0 // indirect

@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/getsops/sops/v3/age"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddytest"
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 )
@@ -366,6 +368,42 @@ func TestCaddyfileAdaptToJSON(t *testing.T) {
 }`,
 		},
 		{
+			name: "age with keychain identity source",
+			input: `{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				identity_source keychain
+			}
+		}
+	}
+}
+`,
+			output: `{
+	"storage": {
+		"backend": {
+			"module": "file_system",
+			"root": "/var/caddy/storage"
+		},
+		"encryption": [
+			{
+				"keys": [
+					{
+						"identity_source": "keychain",
+						"type": "age"
+					}
+				],
+				"provider": "local"
+			}
+		],
+		"module": "encrypted"
+	}
+}`,
+		},
+		{
 			name: "gcp_kms key type",
 			input: `{
 	storage encrypted {
@@ -407,6 +445,143 @@ func TestCaddyfileAdaptToJSON(t *testing.T) {
 			ok := caddytest.CompareAdapt(t, tc.name, tc.input, "caddyfile", tc.output)
 			if !ok {
 				t.Errorf("failed to adapt test case number '%d', named '%s'", i, tc.name)
+			}
+		})
+	}
+}
+
+func TestAgeKeychainMutualExclusion(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	a := &Age{
+		Recipient:      recipient,
+		Identities:     []string{ageId},
+		IdentitySource: "keychain",
+	}
+	err := a.Provision(ctx)
+	if err == nil {
+		t.Fatal("expected error when both identity and identity_source are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutual exclusion error, got: %v", err)
+	}
+}
+
+func TestAgeKeychainUnsupportedSource(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	a := &Age{
+		IdentitySource: "magic",
+	}
+	err := a.Provision(ctx)
+	if err == nil {
+		t.Fatal("expected error for unsupported identity_source")
+	}
+	if !strings.Contains(err.Error(), "unsupported identity_source") {
+		t.Errorf("expected unsupported source error, got: %v", err)
+	}
+}
+
+func TestAgeKeychainRecipientMutualExclusion(t *testing.T) {
+	ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+	a := &Age{
+		Recipient:      recipient,
+		IdentitySource: "keychain",
+	}
+	err := a.Provision(ctx)
+	if err == nil {
+		t.Fatal("expected error when both recipient and identity_source are set")
+	}
+	if !strings.Contains(err.Error(), "recipient and identity_source are mutually exclusive") {
+		t.Errorf("expected mutual exclusion error, got: %v", err)
+	}
+}
+
+func TestAgeCaddyfileMutualExclusion(t *testing.T) {
+	cfgAdapter := caddyconfig.GetAdapter("caddyfile")
+	if cfgAdapter == nil {
+		t.Fatal("caddyfile adapter not found")
+	}
+
+	testcases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name: "identity then identity_source",
+			input: `{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				recipient age1pjtsgtdh79nksq08ujpx8hrup0yrpn4sw3gxl4yyh0vuggjjp3ls7f42y2
+				identity AGE-SECRET-KEY-16E6P6H93CXNPZQRJVNA5NMK4X06ZHCDU4ED9U89E3PZMASSMC46SX99PEW
+				identity_source keychain
+			}
+		}
+	}
+}
+`,
+		},
+		{
+			name: "identity_source then identity",
+			input: `{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				recipient age1pjtsgtdh79nksq08ujpx8hrup0yrpn4sw3gxl4yyh0vuggjjp3ls7f42y2
+				identity_source keychain
+				identity AGE-SECRET-KEY-16E6P6H93CXNPZQRJVNA5NMK4X06ZHCDU4ED9U89E3PZMASSMC46SX99PEW
+			}
+		}
+	}
+}
+`,
+		},
+		{
+			name: "recipient then identity_source",
+			input: `{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				recipient age1pjtsgtdh79nksq08ujpx8hrup0yrpn4sw3gxl4yyh0vuggjjp3ls7f42y2
+				identity_source keychain
+			}
+		}
+	}
+}
+`,
+		},
+		{
+			name: "identity_source then recipient",
+			input: `{
+	storage encrypted {
+		backend file_system {
+			root /var/caddy/storage
+		}
+		provider local {
+			key age {
+				identity_source keychain
+				recipient age1pjtsgtdh79nksq08ujpx8hrup0yrpn4sw3gxl4yyh0vuggjjp3ls7f42y2
+			}
+		}
+	}
+}
+`,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := cfgAdapter.Adapt([]byte(tc.input), nil)
+			if err == nil {
+				t.Fatal("expected mutual exclusion error")
 			}
 		})
 	}
