@@ -19,8 +19,13 @@ const errNotFoundWin = syscall.Errno(1168)
 type windowsStore struct{}
 
 // New returns a Store backed by the Windows Credential Manager.
-// The teamID parameter is ignored on Windows.
-func New(_ string) (Store, error) {
+func New() (Store, error) {
+	return &windowsStore{}, nil
+}
+
+// NewCustom returns a Store backed by the Windows Credential Manager.
+// The storageRoot parameter is ignored on Windows (no custom keychain concept).
+func NewCustom(_ string) (Store, error) {
 	return &windowsStore{}, nil
 }
 

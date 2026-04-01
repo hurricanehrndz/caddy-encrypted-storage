@@ -3,34 +3,97 @@
 package credstore
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 const testServiceName = "com.caddyserver.caddy.encrypted-storage.test"
 
-// testTeamID is used for tests. In CI the actual code signing
-// requirement may not apply, but the constructor requires a non-empty
-// value on macOS.
-const testTeamID = "TEST_TEAM_ID"
-
 func newTestStore(t *testing.T) Store {
 	t.Helper()
-	s, err := New(testTeamID)
+	dir := t.TempDir()
+	s, err := NewCustom(dir)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewCustom: %v", err)
 	}
 	return s
 }
 
-func TestNewRequiresTeamID(t *testing.T) {
-	// Clear the build-time team ID for this test
-	orig := buildTimeTeamID
-	buildTimeTeamID = ""
-	defer func() { buildTimeTeamID = orig }()
+func TestNewCreatesKeychainFiles(t *testing.T) {
+	dir := t.TempDir()
+	_, err := NewCustom(dir)
+	if err != nil {
+		t.Fatalf("NewCustom: %v", err)
+	}
 
-	_, err := New("")
-	if err == nil {
-		t.Fatal("expected error when team_id is empty")
+	kcDir := filepath.Join(dir, keychainDir)
+	if _, err := os.Stat(filepath.Join(kcDir, passwordFile)); err != nil {
+		t.Errorf("password file should exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(kcDir, keychainFile)); err != nil {
+		t.Errorf("keychain file should exist: %v", err)
+	}
+}
+
+func TestNewReopensExistingKeychain(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := NewCustom(dir)
+	if err != nil {
+		t.Fatalf("NewCustom (first): %v", err)
+	}
+
+	account := "age1reopentest0000000000000000000000000000000000000000000000000"
+	data := []byte("AGE-SECRET-KEY-REOPEN00000000000000000000000000000000000000000000000000000")
+	if err := s1.Set(testServiceName, account, data); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Open a second store against the same directory.
+	s2, err := NewCustom(dir)
+	if err != nil {
+		t.Fatalf("NewCustom (second): %v", err)
+	}
+
+	got, err := s2.Get(testServiceName, account)
+	if err != nil {
+		t.Fatalf("Get from reopened store: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Errorf("Get: got %q, want %q", got, data)
+	}
+
+	// Clean up.
+	_ = s2.Delete(testServiceName, account)
+}
+
+func TestSetCreatesRestrictedACL(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewCustom(dir)
+	if err != nil {
+		t.Fatalf("NewCustom: %v", err)
+	}
+	ds := s.(*darwinStore)
+
+	account := "age1acltest00000000000000000000000000000000000000000000000000"
+	data := []byte("AGE-SECRET-KEY-ACLTEST00000000000000000000000000000000000000000000000000")
+
+	t.Cleanup(func() {
+		_ = s.Delete(testServiceName, account)
+	})
+
+	if err := s.Set(testServiceName, account, data); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Verify the item has a non-empty trusted app list on ACLAuthorizationDecrypt,
+	// meaning only specific applications (self) can access it.
+	hasTrustedApps, err := ds.HasTrustedAppACL(testServiceName, account)
+	if err != nil {
+		t.Fatalf("HasTrustedAppACL: %v", err)
+	}
+	if !hasTrustedApps {
+		t.Error("keychain item should have a non-empty trusted application list on its decrypt ACL")
 	}
 }
 

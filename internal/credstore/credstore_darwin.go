@@ -7,36 +7,165 @@ package credstore
 #cgo CFLAGS: -Wno-deprecated-declarations
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
+
 */
 import "C"
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"unsafe"
 )
 
-// buildTimeTeamID can be set at build time via:
-//
-//	-ldflags "-X github.com/mohammed90/caddy-encrypted-storage/internal/credstore.buildTimeTeamID=SBSSF9BESA"
-var buildTimeTeamID string
+// Constants for the custom keychain layout used by NewCustom.
+const (
+	keychainDir  = ".caddy-keychain"
+	keychainFile = "caddy-encrypted-storage.keychain-db"
+	passwordFile = ".password"
+)
 
-// darwinStore implements Store using the macOS Keychain via Security Framework.
+// darwinStore implements Store using the macOS Keychain. When keychain
+// is non-zero a custom keychain is targeted; otherwise the default
+// keychain search list (login + system) is used.
 type darwinStore struct {
-	teamID string
+	keychain     C.SecKeychainRef
+	keychainPass string
 }
 
-// New creates a new macOS Keychain-backed credential store. The build-time
-// buildTimeTeamID takes precedence over the runtimeTeamID argument. At least
-// one must be non-empty.
-func New(runtimeTeamID string) (Store, error) {
-	tid := buildTimeTeamID
-	if tid == "" {
-		tid = runtimeTeamID
+// New creates a Store backed by the default macOS keychain search list
+// (login keychain for regular users, system keychain for root).
+func New() (Store, error) {
+	return &darwinStore{}, nil
+}
+
+// NewCustom creates a Store backed by a custom macOS Keychain located
+// in storageRoot/.caddy-keychain/. The keychain is created on first
+// use with a random password stored alongside it. This is intended for
+// testing where the default keychain should not be used.
+func NewCustom(storageRoot string) (Store, error) {
+	dir := filepath.Join(storageRoot, keychainDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating keychain directory: %w", err)
 	}
-	if tid == "" {
-		return nil, fmt.Errorf("team_id is required on macOS for keychain ACL (set via build-time ldflags or Caddyfile team_id directive)")
+
+	passPath := filepath.Join(dir, passwordFile)
+	kcPath := filepath.Join(dir, keychainFile)
+
+	pass, err := ensurePassword(passPath)
+	if err != nil {
+		return nil, fmt.Errorf("keychain password: %w", err)
 	}
-	return &darwinStore{teamID: tid}, nil
+
+	kc, err := openOrCreateKeychain(kcPath, pass)
+	if err != nil {
+		return nil, fmt.Errorf("keychain open/create: %w", err)
+	}
+
+	return &darwinStore{
+		keychain:     kc,
+		keychainPass: pass,
+	}, nil
+}
+
+// useCustomKeychain reports whether this store targets a custom keychain
+// rather than the default search list.
+func (s *darwinStore) useCustomKeychain() bool {
+	return s.keychain != 0
+}
+
+// ensurePassword reads the keychain password from path, or generates a
+// new random one and writes it.
+func ensurePassword(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err == nil && len(data) > 0 {
+		return string(data), nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("reading password file: %w", err)
+	}
+
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generating random password: %w", err)
+	}
+	pass := hex.EncodeToString(buf)
+
+	if err := os.WriteFile(path, []byte(pass), 0o600); err != nil {
+		return "", fmt.Errorf("writing password file: %w", err)
+	}
+	return pass, nil
+}
+
+// openOrCreateKeychain opens an existing custom keychain or creates one.
+func openOrCreateKeychain(path, password string) (C.SecKeychainRef, error) {
+	pathC := C.CString(path)
+	defer C.free(unsafe.Pointer(pathC))
+
+	passC := C.CString(password)
+	defer C.free(unsafe.Pointer(passC))
+
+	var kc C.SecKeychainRef
+
+	// Try to open an existing keychain first.
+	status := C.SecKeychainOpen(pathC, &kc)
+	if status == C.errSecSuccess {
+		// Verify it's usable by unlocking it.
+		status = C.SecKeychainUnlock(kc, C.UInt32(len(password)), unsafe.Pointer(passC), C.Boolean(1))
+		if status == C.errSecSuccess {
+			return kc, nil
+		}
+		// Unlock failed — might be corrupted or wrong password.
+		// Fall through to create a new one.
+		C.CFRelease(C.CFTypeRef(kc))
+	}
+
+	// Create a new keychain.
+	status = C.SecKeychainCreate(pathC, C.UInt32(len(password)), unsafe.Pointer(passC),
+		C.Boolean(0), // promptUser = false
+		0,            // initialAccess = NULL (default)
+		&kc)
+	if status != C.errSecSuccess {
+		return 0, secError("SecKeychainCreate", status)
+	}
+
+	return kc, nil
+}
+
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
+// secErrorMessage maps common Security Framework OSStatus codes to
+// human-readable descriptions.
+func secErrorMessage(status C.OSStatus) string {
+	switch status {
+	case C.errSecSuccess:
+		return "no error"
+	case C.errSecItemNotFound:
+		return "item not found"
+	case C.errSecDuplicateItem:
+		return "duplicate item"
+	case C.errSecAuthFailed:
+		return "authorization/authentication failed"
+	case C.errSecInteractionNotAllowed:
+		return "user interaction not allowed"
+	case C.errSecDecode:
+		return "unable to decode data"
+	case C.errSecParam:
+		return "invalid parameter"
+	case -25240: // errSecNoAccessForItem
+		return "the specified item has no access control"
+	default:
+		return fmt.Sprintf("OSStatus %d", status)
+	}
+}
+
+// secError returns an error wrapping the given Security Framework status code.
+func secError(operation string, status C.OSStatus) error {
+	return fmt.Errorf("%s failed: %s", operation, secErrorMessage(status))
 }
 
 // ---------------------------------------------------------------------------
@@ -44,26 +173,37 @@ func New(runtimeTeamID string) (Store, error) {
 // ---------------------------------------------------------------------------
 
 // cfString creates a CFStringRef from a Go string. The caller must release
-// the returned reference with C.CFRelease.
-func cfString(s string) C.CFStringRef {
+// the returned reference with C.CFRelease. Returns a non-zero ref or an error.
+func cfString(s string) (C.CFStringRef, error) {
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
-	return C.CFStringCreateWithCString(C.kCFAllocatorDefault, cs, C.kCFStringEncodingUTF8)
+	ref := C.CFStringCreateWithCString(C.kCFAllocatorDefault, cs, C.kCFStringEncodingUTF8)
+	if ref == 0 {
+		return 0, fmt.Errorf("CFStringCreateWithCString returned NULL for %q", s)
+	}
+	return ref, nil
 }
 
 // cfData creates a CFDataRef from a Go byte slice. The caller must release
-// the returned reference with C.CFRelease.
-func cfData(b []byte) C.CFDataRef {
+// the returned reference with C.CFRelease. Returns a non-zero ref or an error.
+func cfData(b []byte) (C.CFDataRef, error) {
+	var ref C.CFDataRef
 	if len(b) == 0 {
-		return C.CFDataCreate(C.kCFAllocatorDefault, nil, 0)
+		ref = C.CFDataCreate(C.kCFAllocatorDefault, nil, 0)
+	} else {
+		ref = C.CFDataCreate(C.kCFAllocatorDefault, (*C.UInt8)(unsafe.Pointer(&b[0])), C.CFIndex(len(b)))
 	}
-	return C.CFDataCreate(C.kCFAllocatorDefault, (*C.UInt8)(unsafe.Pointer(&b[0])), C.CFIndex(len(b)))
+	if ref == 0 {
+		return 0, fmt.Errorf("CFDataCreate returned NULL")
+	}
+	return ref, nil
 }
 
 // cfDictionary builds an immutable CFDictionary from parallel slices of keys
 // and values. The caller must release the returned reference with C.CFRelease.
-func cfDictionary(keys []C.CFTypeRef, values []C.CFTypeRef) C.CFDictionaryRef {
-	return C.CFDictionaryCreate(
+// Returns a non-zero ref or an error.
+func cfDictionary(keys []C.CFTypeRef, values []C.CFTypeRef) (C.CFDictionaryRef, error) {
+	ref := C.CFDictionaryCreate(
 		C.kCFAllocatorDefault,
 		(*unsafe.Pointer)(unsafe.Pointer(&keys[0])),
 		(*unsafe.Pointer)(unsafe.Pointer(&values[0])),
@@ -71,6 +211,10 @@ func cfDictionary(keys []C.CFTypeRef, values []C.CFTypeRef) C.CFDictionaryRef {
 		&C.kCFTypeDictionaryKeyCallBacks,
 		&C.kCFTypeDictionaryValueCallBacks,
 	)
+	if ref == 0 {
+		return 0, fmt.Errorf("CFDictionaryCreate returned NULL")
+	}
+	return ref, nil
 }
 
 // goBytes converts a CFDataRef to a Go byte slice. Returns nil if ref is 0.
@@ -86,44 +230,40 @@ func goBytes(ref C.CFDataRef) []byte {
 	return C.GoBytes(unsafe.Pointer(ptr), C.int(length))
 }
 
-// goStringFromCF converts a CFStringRef to a Go string. Returns "" if ref is 0.
-func goStringFromCF(ref C.CFStringRef) string {
+// goStringFromCF converts a CFStringRef to a Go string.
+// Returns an error if ref is 0 or the string cannot be decoded.
+func goStringFromCF(ref C.CFStringRef) (string, error) {
 	if ref == 0 {
-		return ""
+		return "", fmt.Errorf("cannot convert NULL CFStringRef to Go string")
 	}
-	// Try the fast path first.
 	cstr := C.CFStringGetCStringPtr(ref, C.kCFStringEncodingUTF8)
 	if cstr != nil {
-		return C.GoString(cstr)
+		return C.GoString(cstr), nil
 	}
-	// Fallback: copy into a buffer.
 	length := C.CFStringGetLength(ref)
 	maxSize := C.CFStringGetMaximumSizeForEncoding(length, C.kCFStringEncodingUTF8) + 1
 	buf := C.malloc(C.size_t(maxSize))
 	defer C.free(buf)
 	if C.CFStringGetCString(ref, (*C.char)(buf), maxSize, C.kCFStringEncodingUTF8) == C.Boolean(0) {
-		return ""
+		return "", fmt.Errorf("CFStringGetCString failed to decode string")
 	}
-	return C.GoString((*C.char)(buf))
+	return C.GoString((*C.char)(buf)), nil
 }
 
 // ---------------------------------------------------------------------------
-// SecAccess helper
+// SecAccess / ACL helpers
 // ---------------------------------------------------------------------------
 
 // createAccess builds a SecAccessRef that restricts keychain item access to
-// the current application (self) and applications signed with the given team
-// identifier.
+// the current application (self).
 func (s *darwinStore) createAccess(description string) (C.SecAccessRef, error) {
-	// Create a trusted-application reference for "self" (NULL path = calling app).
 	var selfApp C.SecTrustedApplicationRef
 	status := C.SecTrustedApplicationCreateFromPath(nil, &selfApp)
 	if status != C.errSecSuccess {
-		return 0, fmt.Errorf("SecTrustedApplicationCreateFromPath failed: OSStatus %d", status)
+		return 0, secError("SecTrustedApplicationCreateFromPath", status)
 	}
 	defer C.CFRelease(C.CFTypeRef(selfApp))
 
-	// Build a CFArray containing only self.
 	apps := []C.CFTypeRef{C.CFTypeRef(selfApp)}
 	trustedApps := C.CFArrayCreate(
 		C.kCFAllocatorDefault,
@@ -133,15 +273,155 @@ func (s *darwinStore) createAccess(description string) (C.SecAccessRef, error) {
 	)
 	defer C.CFRelease(C.CFTypeRef(trustedApps))
 
-	descCF := cfString(description)
+	descCF, err := cfString(description)
+	if err != nil {
+		return 0, fmt.Errorf("creating access description: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(descCF))
 
 	var access C.SecAccessRef
 	status = C.SecAccessCreate(descCF, trustedApps, &access)
 	if status != C.errSecSuccess {
-		return 0, fmt.Errorf("SecAccessCreate failed: OSStatus %d", status)
+		return 0, secError("SecAccessCreate", status)
 	}
 	return access, nil
+}
+
+// getItemRef retrieves a SecKeychainItemRef for the given service and account.
+// The caller must release the returned ref.
+func (s *darwinStore) getItemRef(service, account string) (C.SecKeychainItemRef, error) {
+	serviceCF, err := cfString(service)
+	if err != nil {
+		return 0, fmt.Errorf("creating service string: %w", err)
+	}
+	defer C.CFRelease(C.CFTypeRef(serviceCF))
+
+	accountCF, err := cfString(account)
+	if err != nil {
+		return 0, fmt.Errorf("creating account string: %w", err)
+	}
+	defer C.CFRelease(C.CFTypeRef(accountCF))
+
+	keys := []C.CFTypeRef{
+		C.CFTypeRef(C.kSecClass),
+		C.CFTypeRef(C.kSecAttrService),
+		C.CFTypeRef(C.kSecAttrAccount),
+		C.CFTypeRef(C.kSecReturnRef),
+		C.CFTypeRef(C.kSecMatchLimit),
+	}
+	values := []C.CFTypeRef{
+		C.CFTypeRef(C.kSecClassGenericPassword),
+		C.CFTypeRef(serviceCF),
+		C.CFTypeRef(accountCF),
+		C.CFTypeRef(C.kCFBooleanTrue),
+		C.CFTypeRef(C.kSecMatchLimitOne),
+	}
+
+	if s.useCustomKeychain() {
+		searchListCF := s.searchListCF()
+		defer C.CFRelease(C.CFTypeRef(searchListCF))
+		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
+		values = append(values, C.CFTypeRef(searchListCF))
+	}
+
+	query, err := cfDictionary(keys, values)
+	if err != nil {
+		return 0, fmt.Errorf("creating query dictionary: %w", err)
+	}
+	defer C.CFRelease(C.CFTypeRef(query))
+
+	var result C.CFTypeRef
+	status := C.SecItemCopyMatching(query, &result)
+	if status == C.errSecItemNotFound {
+		return 0, ErrNotFound
+	}
+	if status != C.errSecSuccess {
+		return 0, secError("SecItemCopyMatching", status)
+	}
+	return C.SecKeychainItemRef(result), nil
+}
+
+// searchListCF returns a CFArrayRef containing the custom keychain.
+// The caller must release the returned ref.
+func (s *darwinStore) searchListCF() C.CFArrayRef {
+	searchList := []C.CFTypeRef{C.CFTypeRef(s.keychain)}
+	return C.CFArrayCreate(
+		C.kCFAllocatorDefault,
+		(*unsafe.Pointer)(unsafe.Pointer(&searchList[0])),
+		C.CFIndex(1),
+		&C.kCFTypeArrayCallBacks,
+	)
+}
+
+// HasTrustedAppACL verifies that the keychain item for the given service and
+// account has a non-empty trusted application list on its decrypt ACL. This
+// confirms that access is restricted to specific applications rather than
+// being open to all. Exported for testing.
+func (s *darwinStore) HasTrustedAppACL(service, account string) (bool, error) {
+	itemRef, err := s.getItemRef(service, account)
+	if err != nil {
+		return false, err
+	}
+	defer C.CFRelease(C.CFTypeRef(itemRef))
+
+	var accessRef C.SecAccessRef
+	status := C.SecKeychainItemCopyAccess(itemRef, &accessRef)
+	if status != C.errSecSuccess {
+		return false, secError("SecKeychainItemCopyAccess", status)
+	}
+	defer C.CFRelease(C.CFTypeRef(accessRef))
+
+	var aclList C.CFArrayRef
+	status = C.SecAccessCopyACLList(accessRef, &aclList)
+	if status != C.errSecSuccess {
+		return false, secError("SecAccessCopyACLList", status)
+	}
+
+	count := C.CFArrayGetCount(aclList)
+	for i := C.CFIndex(0); i < count; i++ {
+		acl := C.SecACLRef(C.CFArrayGetValueAtIndex(aclList, i))
+
+		authsRef := C.SecACLCopyAuthorizations(acl)
+		if authsRef == 0 {
+			continue
+		}
+
+		// Check if this ACL covers ACLAuthorizationDecrypt.
+		authCount := C.CFArrayGetCount(authsRef)
+		found := false
+		for j := C.CFIndex(0); j < authCount; j++ {
+			authStr := C.CFStringRef(C.CFArrayGetValueAtIndex(authsRef, j))
+			str, _ := goStringFromCF(authStr)
+			if str == "ACLAuthorizationDecrypt" {
+				found = true
+				break
+			}
+		}
+		C.CFRelease(C.CFTypeRef(authsRef))
+
+		if !found {
+			continue
+		}
+
+		// Read the trusted app list for this ACL.
+		var appList C.CFArrayRef
+		var desc C.CFStringRef
+		var prompt C.SecKeychainPromptSelector
+		status = C.SecACLCopyContents(acl, &appList, &desc, &prompt)
+		if status != C.errSecSuccess {
+			return false, secError("SecACLCopyContents", status)
+		}
+		if desc != 0 {
+			C.CFRelease(C.CFTypeRef(desc))
+		}
+		if appList == 0 {
+			return false, nil // nil app list = any app can access
+		}
+		defer C.CFRelease(C.CFTypeRef(appList))
+		return C.CFArrayGetCount(appList) > 0, nil
+	}
+
+	return false, fmt.Errorf("ACLAuthorizationDecrypt not found")
 }
 
 // ---------------------------------------------------------------------------
@@ -151,10 +431,16 @@ func (s *darwinStore) createAccess(description string) (C.SecAccessRef, error) {
 // Get retrieves the credential data for the given service and account.
 // Returns ErrNotFound if the item does not exist.
 func (s *darwinStore) Get(service, account string) ([]byte, error) {
-	serviceCF := cfString(service)
+	serviceCF, err := cfString(service)
+	if err != nil {
+		return nil, fmt.Errorf("creating service string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(serviceCF))
 
-	accountCF := cfString(account)
+	accountCF, err := cfString(account)
+	if err != nil {
+		return nil, fmt.Errorf("creating account string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(accountCF))
 
 	keys := []C.CFTypeRef{
@@ -172,7 +458,17 @@ func (s *darwinStore) Get(service, account string) ([]byte, error) {
 		C.CFTypeRef(C.kSecMatchLimitOne),
 	}
 
-	query := cfDictionary(keys, values)
+	if s.useCustomKeychain() {
+		searchListCF := s.searchListCF()
+		defer C.CFRelease(C.CFTypeRef(searchListCF))
+		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
+		values = append(values, C.CFTypeRef(searchListCF))
+	}
+
+	query, err := cfDictionary(keys, values)
+	if err != nil {
+		return nil, fmt.Errorf("creating query dictionary: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(query))
 
 	var result C.CFTypeRef
@@ -181,7 +477,7 @@ func (s *darwinStore) Get(service, account string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	if status != C.errSecSuccess {
-		return nil, fmt.Errorf("SecItemCopyMatching failed: OSStatus %d", status)
+		return nil, secError("SecItemCopyMatching", status)
 	}
 	defer C.CFRelease(result)
 
@@ -190,10 +486,12 @@ func (s *darwinStore) Get(service, account string) ([]byte, error) {
 }
 
 // GetFirst retrieves the first credential matching the given service name.
-// It returns the credential data, the associated account name, and any error.
 // Returns ErrNotFound if no credentials exist for the service.
 func (s *darwinStore) GetFirst(service string) (data []byte, account string, err error) {
-	serviceCF := cfString(service)
+	serviceCF, err := cfString(service)
+	if err != nil {
+		return nil, "", fmt.Errorf("creating service string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(serviceCF))
 
 	keys := []C.CFTypeRef{
@@ -211,7 +509,17 @@ func (s *darwinStore) GetFirst(service string) (data []byte, account string, err
 		C.CFTypeRef(C.kCFBooleanTrue),
 	}
 
-	query := cfDictionary(keys, values)
+	if s.useCustomKeychain() {
+		searchListCF := s.searchListCF()
+		defer C.CFRelease(C.CFTypeRef(searchListCF))
+		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
+		values = append(values, C.CFTypeRef(searchListCF))
+	}
+
+	query, err := cfDictionary(keys, values)
+	if err != nil {
+		return nil, "", fmt.Errorf("creating query dictionary: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(query))
 
 	var result C.CFTypeRef
@@ -220,45 +528,52 @@ func (s *darwinStore) GetFirst(service string) (data []byte, account string, err
 		return nil, "", ErrNotFound
 	}
 	if status != C.errSecSuccess {
-		return nil, "", fmt.Errorf("SecItemCopyMatching failed: OSStatus %d", status)
+		return nil, "", secError("SecItemCopyMatching", status)
 	}
 	defer C.CFRelease(result)
 
-	// The result is a CFDictionary containing both attributes and data.
 	dict := C.CFDictionaryRef(result)
 
-	// Extract the credential data.
 	dataPtr := C.CFDictionaryGetValue(dict, unsafe.Pointer(C.kSecValueData))
 	if dataPtr == nil {
 		return nil, "", fmt.Errorf("keychain item missing value data")
 	}
 	data = goBytes(C.CFDataRef(dataPtr))
 
-	// Extract the account name from the attributes.
 	accountPtr := C.CFDictionaryGetValue(dict, unsafe.Pointer(C.kSecAttrAccount))
 	if accountPtr == nil {
 		return nil, "", fmt.Errorf("keychain item missing account attribute")
 	}
-	account = goStringFromCF(C.CFStringRef(accountPtr))
+	account, err = goStringFromCF(C.CFStringRef(accountPtr))
+	if err != nil {
+		return nil, "", fmt.Errorf("decoding account name: %w", err)
+	}
 
 	return data, account, nil
 }
 
-// Set creates or updates a keychain item for the given service and account.
-// If the item already exists, its data is updated. Otherwise a new item is
-// created with access control restricting use to self and applications signed
-// with the configured team ID.
+// Set creates or updates a keychain item. New items are created with an
+// ACL restricting access to self (the current application).
 func (s *darwinStore) Set(service, account string, data []byte) error {
-	serviceCF := cfString(service)
+	serviceCF, err := cfString(service)
+	if err != nil {
+		return fmt.Errorf("creating service string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(serviceCF))
 
-	accountCF := cfString(account)
+	accountCF, err := cfString(account)
+	if err != nil {
+		return fmt.Errorf("creating account string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(accountCF))
 
-	dataCF := cfData(data)
+	dataCF, err := cfData(data)
+	if err != nil {
+		return fmt.Errorf("creating data: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(dataCF))
 
-	// Build a query to check whether the item already exists.
+	// Probe for existing item.
 	queryKeys := []C.CFTypeRef{
 		C.CFTypeRef(C.kSecClass),
 		C.CFTypeRef(C.kSecAttrService),
@@ -270,40 +585,50 @@ func (s *darwinStore) Set(service, account string, data []byte) error {
 		C.CFTypeRef(accountCF),
 	}
 
-	query := cfDictionary(queryKeys, queryValues)
+	if s.useCustomKeychain() {
+		searchListCF := s.searchListCF()
+		defer C.CFRelease(C.CFTypeRef(searchListCF))
+		queryKeys = append(queryKeys, C.CFTypeRef(C.kSecMatchSearchList))
+		queryValues = append(queryValues, C.CFTypeRef(searchListCF))
+	}
+
+	query, err := cfDictionary(queryKeys, queryValues)
+	if err != nil {
+		return fmt.Errorf("creating query dictionary: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(query))
 
-	// Probe for existing item.
 	status := C.SecItemCopyMatching(query, nil)
 	if status == C.errSecSuccess {
-		// Item exists -- update it.
-		updateKeys := []C.CFTypeRef{
-			C.CFTypeRef(C.kSecValueData),
+		// Item exists — update it.
+		updateKeys := []C.CFTypeRef{C.CFTypeRef(C.kSecValueData)}
+		updateValues := []C.CFTypeRef{C.CFTypeRef(dataCF)}
+		attrs, err := cfDictionary(updateKeys, updateValues)
+		if err != nil {
+			return fmt.Errorf("creating update dictionary: %w", err)
 		}
-		updateValues := []C.CFTypeRef{
-			C.CFTypeRef(dataCF),
-		}
-		attrs := cfDictionary(updateKeys, updateValues)
 		defer C.CFRelease(C.CFTypeRef(attrs))
 
 		status = C.SecItemUpdate(query, attrs)
 		if status != C.errSecSuccess {
-			return fmt.Errorf("SecItemUpdate failed: OSStatus %d", status)
+			return secError("SecItemUpdate", status)
 		}
 		return nil
 	}
 
 	if status != C.errSecItemNotFound {
-		return fmt.Errorf("SecItemCopyMatching (probe) failed: OSStatus %d", status)
+		return secError("SecItemCopyMatching (probe)", status)
 	}
 
-	// Item does not exist -- create it with access control.
+	// Item does not exist — create it with ACL.
 	label := "Caddy Encrypted Storage - Age Identity"
-	labelCF := cfString(label)
+	labelCF, err := cfString(label)
+	if err != nil {
+		return fmt.Errorf("creating label string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(labelCF))
 
-	accessDesc := fmt.Sprintf("anchor apple or certificate leaf[subject.OU] = \"%s\"", s.teamID)
-	access, err := s.createAccess(accessDesc)
+	access, err := s.createAccess("Caddy Encrypted Storage")
 	if err != nil {
 		return fmt.Errorf("creating keychain access control: %w", err)
 	}
@@ -326,23 +651,38 @@ func (s *darwinStore) Set(service, account string, data []byte) error {
 		C.CFTypeRef(access),
 	}
 
-	addDict := cfDictionary(addKeys, addValues)
+	if s.useCustomKeychain() {
+		addKeys = append(addKeys, C.CFTypeRef(C.kSecUseKeychain))
+		addValues = append(addValues, C.CFTypeRef(s.keychain))
+	}
+
+	addDict, err := cfDictionary(addKeys, addValues)
+	if err != nil {
+		return fmt.Errorf("creating add dictionary: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(addDict))
 
 	status = C.SecItemAdd(addDict, nil)
 	if status != C.errSecSuccess {
-		return fmt.Errorf("SecItemAdd failed: OSStatus %d", status)
+		return secError("SecItemAdd", status)
 	}
+
 	return nil
 }
 
 // Delete removes the keychain item for the given service and account.
 // Returns ErrNotFound if the item does not exist.
 func (s *darwinStore) Delete(service, account string) error {
-	serviceCF := cfString(service)
+	serviceCF, err := cfString(service)
+	if err != nil {
+		return fmt.Errorf("creating service string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(serviceCF))
 
-	accountCF := cfString(account)
+	accountCF, err := cfString(account)
+	if err != nil {
+		return fmt.Errorf("creating account string: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(accountCF))
 
 	keys := []C.CFTypeRef{
@@ -356,7 +696,17 @@ func (s *darwinStore) Delete(service, account string) error {
 		C.CFTypeRef(accountCF),
 	}
 
-	query := cfDictionary(keys, values)
+	if s.useCustomKeychain() {
+		searchListCF := s.searchListCF()
+		defer C.CFRelease(C.CFTypeRef(searchListCF))
+		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
+		values = append(values, C.CFTypeRef(searchListCF))
+	}
+
+	query, err := cfDictionary(keys, values)
+	if err != nil {
+		return fmt.Errorf("creating query dictionary: %w", err)
+	}
 	defer C.CFRelease(C.CFTypeRef(query))
 
 	status := C.SecItemDelete(query)
@@ -364,7 +714,7 @@ func (s *darwinStore) Delete(service, account string) error {
 		return ErrNotFound
 	}
 	if status != C.errSecSuccess {
-		return fmt.Errorf("SecItemDelete failed: OSStatus %d", status)
+		return secError("SecItemDelete", status)
 	}
 	return nil
 }

@@ -105,10 +105,6 @@ func (s *Age) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if err := s.parseIdentitySource(d); err != nil {
 				return err
 			}
-		case "team_id":
-			if err := s.parseTeamID(d); err != nil {
-				return err
-			}
 		default:
 			return d.Errf("unrecognized parameter '%s'", d.Val())
 		}
@@ -155,17 +151,6 @@ func (s *Age) parseIdentitySource(d *caddyfile.Dispenser) error {
 		return d.Err("recipient and identity_source are mutually exclusive")
 	}
 	s.IdentitySource = d.Val()
-	return nil
-}
-
-func (s *Age) parseTeamID(d *caddyfile.Dispenser) error {
-	if !d.NextArg() {
-		return d.ArgErr()
-	}
-	if len(s.TeamID) > 0 {
-		return d.Err("team_id already specified")
-	}
-	s.TeamID = d.Val()
 	return nil
 }
 

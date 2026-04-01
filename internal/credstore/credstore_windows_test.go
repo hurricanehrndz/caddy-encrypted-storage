@@ -10,7 +10,7 @@ const testServiceName = "com.caddyserver.caddy.encrypted-storage.test"
 
 func newTestStore(t *testing.T) Store {
 	t.Helper()
-	s, err := New("")
+	s, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

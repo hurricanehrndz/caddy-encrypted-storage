@@ -377,7 +377,6 @@ func TestCaddyfileAdaptToJSON(t *testing.T) {
 		provider local {
 			key age {
 				identity_source keychain
-				team_id SBSSF9BESA
 			}
 		}
 	}
@@ -394,7 +393,6 @@ func TestCaddyfileAdaptToJSON(t *testing.T) {
 				"keys": [
 					{
 						"identity_source": "keychain",
-						"team_id": "SBSSF9BESA",
 						"type": "age"
 					}
 				],

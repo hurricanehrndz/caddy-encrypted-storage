@@ -34,11 +34,6 @@ type Age struct {
 	// Mutually exclusive with Identities.
 	IdentitySource string `json:"identity_source,omitempty"`
 
-	// TeamID is the Apple Developer Team ID for macOS keychain ACL.
-	// Only used when IdentitySource is "keychain" on macOS.
-	// Can also be set at build time via ldflags.
-	TeamID string `json:"team_id,omitempty"`
-
 	mk     *age.MasterKey
 	logger *zap.Logger
 }
@@ -52,7 +47,7 @@ func (a *Age) Provision(ctx caddy.Context) error {
 		r = caddy.NewReplacer()
 	}
 	a.Recipient = r.ReplaceKnown(a.Recipient, "")
-	a.TeamID = r.ReplaceKnown(a.TeamID, "")
+	a.IdentitySource = r.ReplaceKnown(a.IdentitySource, "")
 
 	if a.IdentitySource != "" {
 		return a.provisionFromCredentialStore()
@@ -92,7 +87,7 @@ func (a *Age) provisionFromCredentialStore() error {
 			"the recipient is derived from the identity in the credential store")
 	}
 
-	store, err := credstore.New(a.TeamID)
+	store, err := credstore.New()
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
