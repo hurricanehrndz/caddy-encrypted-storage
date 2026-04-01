@@ -27,7 +27,7 @@ const (
 	passwordFile = ".password"
 )
 
-// darwinStore implements Store using the macOS Keychain. When keychain
+// darwinStore implements Store using the macOS Keychain. When `keychain`
 // is non-zero a custom keychain is targeted; otherwise the default
 // keychain search list (login + system) is used.
 type darwinStore struct {
@@ -70,6 +70,15 @@ func NewCustom(storageRoot string) (Store, error) {
 	}, nil
 }
 
+// Close releases the custom keychain reference, if any. It is a no-op
+// for stores using the default keychain search list.
+func (s *darwinStore) Close() {
+	if s.keychain != 0 {
+		C.CFRelease(C.CFTypeRef(s.keychain))
+		s.keychain = 0
+	}
+}
+
 // useCustomKeychain reports whether this store targets a custom keychain
 // rather than the default search list.
 func (s *darwinStore) useCustomKeychain() bool {
@@ -80,10 +89,15 @@ func (s *darwinStore) useCustomKeychain() bool {
 // new random one and writes it.
 func ensurePassword(path string) (string, error) {
 	data, err := os.ReadFile(path)
-	if err == nil && len(data) > 0 {
-		return string(data), nil
+	if err == nil {
+		if len(data) > 0 {
+			return string(data), nil
+		}
+		return "", fmt.Errorf("password file %q exists but is empty; "+
+			"this may indicate a corrupted state — delete the file and "+
+			"the keychain to reset", path)
 	}
-	if err != nil && !os.IsNotExist(err) {
+	if !os.IsNotExist(err) {
 		return "", fmt.Errorf("reading password file: %w", err)
 	}
 
@@ -93,8 +107,20 @@ func ensurePassword(path string) (string, error) {
 	}
 	pass := hex.EncodeToString(buf)
 
-	if err := os.WriteFile(path, []byte(pass), 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("creating password file: %w", err)
+	}
+	if _, err := f.WriteString(pass); err != nil {
+		f.Close()
 		return "", fmt.Errorf("writing password file: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", fmt.Errorf("syncing password file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("closing password file: %w", err)
 	}
 	return pass, nil
 }
@@ -117,12 +143,21 @@ func openOrCreateKeychain(path, password string) (C.SecKeychainRef, error) {
 		if status == C.errSecSuccess {
 			return kc, nil
 		}
-		// Unlock failed — might be corrupted or wrong password.
-		// Fall through to create a new one.
+		unlockErr := secError("SecKeychainUnlock", status)
 		C.CFRelease(C.CFTypeRef(kc))
+
+		// Create a new keychain. If this also fails, include
+		// the original unlock error for diagnostics.
+		status = C.SecKeychainCreate(pathC, C.UInt32(len(password)), unsafe.Pointer(passC),
+			C.Boolean(0), 0, &kc)
+		if status != C.errSecSuccess {
+			return 0, fmt.Errorf("existing keychain unlock failed (%w) and "+
+				"creating new keychain also failed: %s", unlockErr, secErrorMessage(status))
+		}
+		return kc, nil
 	}
 
-	// Create a new keychain.
+	// No existing keychain — create a new one.
 	status = C.SecKeychainCreate(pathC, C.UInt32(len(password)), unsafe.Pointer(passC),
 		C.Boolean(0), // promptUser = false
 		0,            // initialAccess = NULL (default)
@@ -271,6 +306,9 @@ func (s *darwinStore) createAccess(description string) (C.SecAccessRef, error) {
 		C.CFIndex(len(apps)),
 		&C.kCFTypeArrayCallBacks,
 	)
+	if trustedApps == 0 {
+		return 0, fmt.Errorf("CFArrayCreate returned NULL for trusted apps")
+	}
 	defer C.CFRelease(C.CFTypeRef(trustedApps))
 
 	descCF, err := cfString(description)
@@ -317,12 +355,11 @@ func (s *darwinStore) getItemRef(service, account string) (C.SecKeychainItemRef,
 		C.CFTypeRef(C.kSecMatchLimitOne),
 	}
 
-	if s.useCustomKeychain() {
-		searchListCF := s.searchListCF()
-		defer C.CFRelease(C.CFTypeRef(searchListCF))
-		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
-		values = append(values, C.CFTypeRef(searchListCF))
+	cleanup, err := s.appendSearchList(&keys, &values)
+	if err != nil {
+		return 0, err
 	}
+	defer cleanup()
 
 	query, err := cfDictionary(keys, values)
 	if err != nil {
@@ -341,22 +378,34 @@ func (s *darwinStore) getItemRef(service, account string) (C.SecKeychainItemRef,
 	return C.SecKeychainItemRef(result), nil
 }
 
-// searchListCF returns a CFArrayRef containing the custom keychain.
-// The caller must release the returned ref.
-func (s *darwinStore) searchListCF() C.CFArrayRef {
-	searchList := []C.CFTypeRef{C.CFTypeRef(s.keychain)}
-	return C.CFArrayCreate(
+// appendSearchList appends kSecMatchSearchList targeting the custom keychain
+// to the given query key/value slices. If the store uses the default keychain,
+// this is a no-op. The returned cleanup function must be called to release the
+// CFArrayRef (it is safe to call even when no array was created).
+func (s *darwinStore) appendSearchList(keys, values *[]C.CFTypeRef) (cleanup func(), err error) {
+	noop := func() {}
+	if !s.useCustomKeychain() {
+		return noop, nil
+	}
+	items := []C.CFTypeRef{C.CFTypeRef(s.keychain)}
+	ref := C.CFArrayCreate(
 		C.kCFAllocatorDefault,
-		(*unsafe.Pointer)(unsafe.Pointer(&searchList[0])),
+		(*unsafe.Pointer)(unsafe.Pointer(&items[0])),
 		C.CFIndex(1),
 		&C.kCFTypeArrayCallBacks,
 	)
+	if ref == 0 {
+		return noop, fmt.Errorf("CFArrayCreate returned NULL for search list")
+	}
+	*keys = append(*keys, C.CFTypeRef(C.kSecMatchSearchList))
+	*values = append(*values, C.CFTypeRef(ref))
+	return func() { C.CFRelease(C.CFTypeRef(ref)) }, nil
 }
 
 // HasTrustedAppACL verifies that the keychain item for the given service and
 // account has a non-empty trusted application list on its decrypt ACL. This
 // confirms that access is restricted to specific applications rather than
-// being open to all. Exported for testing.
+// being open to all. Used by tests in this package via type assertion.
 func (s *darwinStore) HasTrustedAppACL(service, account string) (bool, error) {
 	itemRef, err := s.getItemRef(service, account)
 	if err != nil {
@@ -376,6 +425,7 @@ func (s *darwinStore) HasTrustedAppACL(service, account string) (bool, error) {
 	if status != C.errSecSuccess {
 		return false, secError("SecAccessCopyACLList", status)
 	}
+	defer C.CFRelease(C.CFTypeRef(aclList))
 
 	count := C.CFArrayGetCount(aclList)
 	for i := C.CFIndex(0); i < count; i++ {
@@ -391,7 +441,11 @@ func (s *darwinStore) HasTrustedAppACL(service, account string) (bool, error) {
 		found := false
 		for j := C.CFIndex(0); j < authCount; j++ {
 			authStr := C.CFStringRef(C.CFArrayGetValueAtIndex(authsRef, j))
-			str, _ := goStringFromCF(authStr)
+			str, err := goStringFromCF(authStr)
+			if err != nil {
+				C.CFRelease(C.CFTypeRef(authsRef))
+				return false, fmt.Errorf("decoding ACL authorization string: %w", err)
+			}
 			if str == "ACLAuthorizationDecrypt" {
 				found = true
 				break
@@ -458,12 +512,11 @@ func (s *darwinStore) Get(service, account string) ([]byte, error) {
 		C.CFTypeRef(C.kSecMatchLimitOne),
 	}
 
-	if s.useCustomKeychain() {
-		searchListCF := s.searchListCF()
-		defer C.CFRelease(C.CFTypeRef(searchListCF))
-		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
-		values = append(values, C.CFTypeRef(searchListCF))
+	cleanup, err := s.appendSearchList(&keys, &values)
+	if err != nil {
+		return nil, err
 	}
+	defer cleanup()
 
 	query, err := cfDictionary(keys, values)
 	if err != nil {
@@ -509,12 +562,11 @@ func (s *darwinStore) GetFirst(service string) (data []byte, account string, err
 		C.CFTypeRef(C.kCFBooleanTrue),
 	}
 
-	if s.useCustomKeychain() {
-		searchListCF := s.searchListCF()
-		defer C.CFRelease(C.CFTypeRef(searchListCF))
-		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
-		values = append(values, C.CFTypeRef(searchListCF))
+	cleanup, err := s.appendSearchList(&keys, &values)
+	if err != nil {
+		return nil, "", err
 	}
+	defer cleanup()
 
 	query, err := cfDictionary(keys, values)
 	if err != nil {
@@ -585,12 +637,11 @@ func (s *darwinStore) Set(service, account string, data []byte) error {
 		C.CFTypeRef(accountCF),
 	}
 
-	if s.useCustomKeychain() {
-		searchListCF := s.searchListCF()
-		defer C.CFRelease(C.CFTypeRef(searchListCF))
-		queryKeys = append(queryKeys, C.CFTypeRef(C.kSecMatchSearchList))
-		queryValues = append(queryValues, C.CFTypeRef(searchListCF))
+	cleanup, err := s.appendSearchList(&queryKeys, &queryValues)
+	if err != nil {
+		return err
 	}
+	defer cleanup()
 
 	query, err := cfDictionary(queryKeys, queryValues)
 	if err != nil {
@@ -696,12 +747,11 @@ func (s *darwinStore) Delete(service, account string) error {
 		C.CFTypeRef(accountCF),
 	}
 
-	if s.useCustomKeychain() {
-		searchListCF := s.searchListCF()
-		defer C.CFRelease(C.CFTypeRef(searchListCF))
-		keys = append(keys, C.CFTypeRef(C.kSecMatchSearchList))
-		values = append(values, C.CFTypeRef(searchListCF))
+	cleanup, err := s.appendSearchList(&keys, &values)
+	if err != nil {
+		return err
 	}
+	defer cleanup()
 
 	query, err := cfDictionary(keys, values)
 	if err != nil {

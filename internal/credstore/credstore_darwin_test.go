@@ -17,15 +17,28 @@ func newTestStore(t *testing.T) Store {
 	if err != nil {
 		t.Fatalf("NewCustom: %v", err)
 	}
+	t.Cleanup(func() { s.(*darwinStore).Close() })
 	return s
+}
+
+func TestNewUsesDefaultKeychain(t *testing.T) {
+	s, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ds := s.(*darwinStore)
+	if ds.useCustomKeychain() {
+		t.Error("New() should use the default keychain, not a custom one")
+	}
 }
 
 func TestNewCreatesKeychainFiles(t *testing.T) {
 	dir := t.TempDir()
-	_, err := NewCustom(dir)
+	s, err := NewCustom(dir)
 	if err != nil {
 		t.Fatalf("NewCustom: %v", err)
 	}
+	t.Cleanup(func() { s.(*darwinStore).Close() })
 
 	kcDir := filepath.Join(dir, keychainDir)
 	if _, err := os.Stat(filepath.Join(kcDir, passwordFile)); err != nil {
@@ -42,6 +55,7 @@ func TestNewReopensExistingKeychain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCustom (first): %v", err)
 	}
+	t.Cleanup(func() { s1.(*darwinStore).Close() })
 
 	account := "age1reopentest0000000000000000000000000000000000000000000000000"
 	data := []byte("AGE-SECRET-KEY-REOPEN00000000000000000000000000000000000000000000000000000")
@@ -54,6 +68,7 @@ func TestNewReopensExistingKeychain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCustom (second): %v", err)
 	}
+	t.Cleanup(func() { s2.(*darwinStore).Close() })
 
 	got, err := s2.Get(testServiceName, account)
 	if err != nil {
@@ -63,8 +78,7 @@ func TestNewReopensExistingKeychain(t *testing.T) {
 		t.Errorf("Get: got %q, want %q", got, data)
 	}
 
-	// Clean up.
-	_ = s2.Delete(testServiceName, account)
+	t.Cleanup(func() { _ = s2.Delete(testServiceName, account) })
 }
 
 func TestSetCreatesRestrictedACL(t *testing.T) {
@@ -74,6 +88,7 @@ func TestSetCreatesRestrictedACL(t *testing.T) {
 		t.Fatalf("NewCustom: %v", err)
 	}
 	ds := s.(*darwinStore)
+	t.Cleanup(func() { ds.Close() })
 
 	account := "age1acltest00000000000000000000000000000000000000000000000000"
 	data := []byte("AGE-SECRET-KEY-ACLTEST00000000000000000000000000000000000000000000000000")
