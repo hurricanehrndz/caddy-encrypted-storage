@@ -9,7 +9,7 @@ require (
 	github.com/danieljoos/wincred v1.2.2
 	github.com/getsops/sops/v3 v3.10.2
 	go.uber.org/zap v1.27.1
-	google.golang.org/grpc v1.79.1
+	google.golang.org/grpc v1.80.0
 )
 
 require (
@@ -174,7 +174,7 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/bigmod v0.1.0 // indirect
 	github.com/DeRuina/timberjack v1.3.9 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.53.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.53.0 // indirect
 	github.com/KimMachineGun/automemlimit v0.7.5 // indirect
