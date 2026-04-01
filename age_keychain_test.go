@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/caddyserver/caddy/v2"
 	"github.com/mohammed90/caddy-encrypted-storage/internal/credstore"
+
+	"github.com/caddyserver/caddy/v2"
 )
 
 func TestAgeKeychainProvisionHappyPath(t *testing.T) {
