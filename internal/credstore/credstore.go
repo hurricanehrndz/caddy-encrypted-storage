@@ -10,6 +10,8 @@ const ServiceName = "com.caddyserver.caddy.encrypted-storage"
 var ErrNotFound = errors.New("credential not found")
 
 // Store provides platform-independent credential storage operations.
+// Implementations may hold OS resources; callers should defer Close()
+// after obtaining a Store.
 type Store interface {
 	// Get retrieves a credential by service and account names.
 	// Returns ErrNotFound if the credential does not exist.
@@ -26,4 +28,8 @@ type Store interface {
 	// Delete removes a credential by service and account names.
 	// Returns ErrNotFound if the credential does not exist.
 	Delete(service, account string) error
+
+	// Close releases any OS resources held by the store.
+	// It is safe to call multiple times.
+	Close() error
 }

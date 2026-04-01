@@ -18,6 +18,9 @@ const errNotFoundWin = syscall.Errno(1168)
 // windowsStore implements Store using the Windows Credential Manager.
 type windowsStore struct{}
 
+// Close is a no-op on Windows (the store is stateless).
+func (s *windowsStore) Close() error { return nil }
+
 // New returns a Store backed by the Windows Credential Manager.
 func New() (Store, error) {
 	return &windowsStore{}, nil

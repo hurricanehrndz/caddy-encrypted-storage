@@ -71,12 +71,14 @@ func NewCustom(storageRoot string) (Store, error) {
 }
 
 // Close releases the custom keychain reference, if any. It is a no-op
-// for stores using the default keychain search list.
-func (s *darwinStore) Close() {
+// for stores using the default keychain search list. Safe to call
+// multiple times.
+func (s *darwinStore) Close() error {
 	if s.keychain != 0 {
 		C.CFRelease(C.CFTypeRef(s.keychain))
 		s.keychain = 0
 	}
+	return nil
 }
 
 // useCustomKeychain reports whether this store targets a custom keychain
@@ -109,23 +111,39 @@ func ensurePassword(path string) (string, error) {
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
+		if os.IsExist(err) {
+			// Another process won the race — read its password.
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return "", fmt.Errorf("reading password file after race: %w", readErr)
+			}
+			if len(data) == 0 {
+				return "", fmt.Errorf("password file %q exists but is empty after race", path)
+			}
+			return string(data), nil
+		}
 		return "", fmt.Errorf("creating password file: %w", err)
 	}
 	if _, err := f.WriteString(pass); err != nil {
 		f.Close()
+		os.Remove(path)
 		return "", fmt.Errorf("writing password file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
+		os.Remove(path)
 		return "", fmt.Errorf("syncing password file: %w", err)
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(path)
 		return "", fmt.Errorf("closing password file: %w", err)
 	}
 	return pass, nil
 }
 
 // openOrCreateKeychain opens an existing custom keychain or creates one.
+// If the keychain file exists but cannot be unlocked (e.g. wrong password),
+// an error is returned rather than silently replacing the keychain.
 func openOrCreateKeychain(path, password string) (C.SecKeychainRef, error) {
 	pathC := C.CString(path)
 	defer C.free(unsafe.Pointer(pathC))
@@ -136,6 +154,8 @@ func openOrCreateKeychain(path, password string) (C.SecKeychainRef, error) {
 	var kc C.SecKeychainRef
 
 	// Try to open an existing keychain first.
+	// Note: SecKeychainOpen always succeeds — it merely records the path
+	// without verifying the file exists.
 	status := C.SecKeychainOpen(pathC, &kc)
 	if status == C.errSecSuccess {
 		// Verify it's usable by unlocking it.
@@ -146,13 +166,23 @@ func openOrCreateKeychain(path, password string) (C.SecKeychainRef, error) {
 		unlockErr := secError("SecKeychainUnlock", status)
 		C.CFRelease(C.CFTypeRef(kc))
 
-		// Create a new keychain. If this also fails, include
-		// the original unlock error for diagnostics.
+		// Only create a new keychain if the file does not exist on disk.
+		// If it exists but unlock failed (wrong password, corruption),
+		// return an error to avoid silently replacing the keychain and
+		// losing the stored identity.
+		if _, statErr := os.Stat(path); statErr == nil {
+			return 0, fmt.Errorf("keychain exists at %s but unlock failed: %w; "+
+				"if the keychain is corrupted, delete it and its password file to reset", path, unlockErr)
+		} else if !os.IsNotExist(statErr) {
+			return 0, fmt.Errorf("keychain unlock failed (%w) and cannot determine "+
+				"if keychain file exists: %v", unlockErr, statErr)
+		}
+
 		status = C.SecKeychainCreate(pathC, C.UInt32(len(password)), unsafe.Pointer(passC),
 			C.Boolean(0), 0, &kc)
 		if status != C.errSecSuccess {
-			return 0, fmt.Errorf("existing keychain unlock failed (%w) and "+
-				"creating new keychain also failed: %s", unlockErr, secErrorMessage(status))
+			return 0, fmt.Errorf("keychain file missing (unlock had failed: %v) "+
+				"and creating new keychain also failed: %s", unlockErr, secErrorMessage(status))
 		}
 		return kc, nil
 	}
@@ -252,17 +282,17 @@ func cfDictionary(keys []C.CFTypeRef, values []C.CFTypeRef) (C.CFDictionaryRef, 
 	return ref, nil
 }
 
-// goBytes converts a CFDataRef to a Go byte slice. Returns nil if ref is 0.
-func goBytes(ref C.CFDataRef) []byte {
+// goBytes converts a CFDataRef to a Go byte slice. Returns an error if ref is 0.
+func goBytes(ref C.CFDataRef) ([]byte, error) {
 	if ref == 0 {
-		return nil
+		return nil, fmt.Errorf("cannot convert NULL CFDataRef to Go bytes")
 	}
 	length := C.CFDataGetLength(ref)
 	if length == 0 {
-		return []byte{}
+		return []byte{}, nil
 	}
 	ptr := C.CFDataGetBytePtr(ref)
-	return C.GoBytes(unsafe.Pointer(ptr), C.int(length))
+	return C.GoBytes(unsafe.Pointer(ptr), C.int(length)), nil
 }
 
 // goStringFromCF converts a CFStringRef to a Go string.
@@ -471,8 +501,9 @@ func (s *darwinStore) HasTrustedAppACL(service, account string) (bool, error) {
 		if appList == 0 {
 			return false, nil // nil app list = any app can access
 		}
-		defer C.CFRelease(C.CFTypeRef(appList))
-		return C.CFArrayGetCount(appList) > 0, nil
+		hasApps := C.CFArrayGetCount(appList) > 0
+		C.CFRelease(C.CFTypeRef(appList))
+		return hasApps, nil
 	}
 
 	return false, fmt.Errorf("ACLAuthorizationDecrypt not found")
@@ -534,7 +565,10 @@ func (s *darwinStore) Get(service, account string) ([]byte, error) {
 	}
 	defer C.CFRelease(result)
 
-	data := goBytes(C.CFDataRef(result))
+	data, err := goBytes(C.CFDataRef(result))
+	if err != nil {
+		return nil, fmt.Errorf("reading credential data: %w", err)
+	}
 	return data, nil
 }
 
@@ -590,7 +624,10 @@ func (s *darwinStore) GetFirst(service string) (data []byte, account string, err
 	if dataPtr == nil {
 		return nil, "", fmt.Errorf("keychain item missing value data")
 	}
-	data = goBytes(C.CFDataRef(dataPtr))
+	data, err = goBytes(C.CFDataRef(dataPtr))
+	if err != nil {
+		return nil, "", fmt.Errorf("reading credential data: %w", err)
+	}
 
 	accountPtr := C.CFDictionaryGetValue(dict, unsafe.Pointer(C.kSecAttrAccount))
 	if accountPtr == nil {

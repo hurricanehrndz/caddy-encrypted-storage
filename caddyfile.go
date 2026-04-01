@@ -150,7 +150,11 @@ func (s *Age) parseIdentitySource(d *caddyfile.Dispenser) error {
 	if len(s.Recipient) > 0 {
 		return d.Err("recipient and identity_source are mutually exclusive")
 	}
-	s.IdentitySource = d.Val()
+	val := d.Val()
+	if val != "keychain" {
+		return d.Errf("unsupported identity_source %q; supported values: keychain", val)
+	}
+	s.IdentitySource = val
 	return nil
 }
 

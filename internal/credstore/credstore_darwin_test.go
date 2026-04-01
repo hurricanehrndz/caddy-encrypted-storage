@@ -17,7 +17,7 @@ func newTestStore(t *testing.T) Store {
 	if err != nil {
 		t.Fatalf("NewCustom: %v", err)
 	}
-	t.Cleanup(func() { s.(*darwinStore).Close() })
+	t.Cleanup(func() { s.Close() })
 	return s
 }
 
@@ -38,7 +38,7 @@ func TestNewCreatesKeychainFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCustom: %v", err)
 	}
-	t.Cleanup(func() { s.(*darwinStore).Close() })
+	t.Cleanup(func() { s.Close() })
 
 	kcDir := filepath.Join(dir, keychainDir)
 	if _, err := os.Stat(filepath.Join(kcDir, passwordFile)); err != nil {
