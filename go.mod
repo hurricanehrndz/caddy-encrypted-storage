@@ -1,4 +1,4 @@
-module github.com/mohammed90/caddy-encrypted-storage
+module github.com/hurricanehrndz/caddy-encrypted-storage
 
 go 1.26.0
 

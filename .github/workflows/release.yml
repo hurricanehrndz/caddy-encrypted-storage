@@ -49,7 +49,7 @@ jobs:
             ## Installation
 
             ```bash
-            xcaddy build --with github.com/mohammed90/caddy-encrypted-storage@${{ steps.get_version.outputs.VERSION }}
+            xcaddy build --with github.com/hurricanehrndz/caddy-encrypted-storage@${{ steps.get_version.outputs.VERSION }}
             ```
 
             ## Documentation

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mohammed90/caddy-encrypted-storage/internal/credstore"
+	"github.com/hurricanehrndz/caddy-encrypted-storage/internal/credstore"
 
 	"github.com/caddyserver/caddy/v2"
 )

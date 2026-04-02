@@ -16,7 +16,7 @@ build/darwin/caddy:
 	test -d $(@D) || mkdir -p $(@D)
 	CGO_ENABLED=1 go tool -modfile=tools.mod xcaddy build \
 		--output $(@) \
-		--with github.com/mohammed90/caddy-encrypted-storage=.
+		--with github.com/hurricanehrndz/caddy-encrypted-storage=.
 
 .PHONY: install-hooks
 install-hooks:

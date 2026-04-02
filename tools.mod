@@ -1,6 +1,6 @@
-module github.com/mohammed90/caddy-encrypted-storage/tools
+module github.com/hurricanehrndz/caddy-encrypted-storage/tools
 
-go 1.25.0
+go 1.26.0
 
 tool (
 	github.com/caddyserver/xcaddy/cmd/xcaddy

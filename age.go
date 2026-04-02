@@ -7,7 +7,7 @@ import (
 	filippoAge "filippo.io/age"
 	"github.com/getsops/sops/v3/age"
 	"github.com/getsops/sops/v3/keys"
-	"github.com/mohammed90/caddy-encrypted-storage/internal/credstore"
+	"github.com/hurricanehrndz/caddy-encrypted-storage/internal/credstore"
 	"go.uber.org/zap"
 
 	"github.com/caddyserver/caddy/v2"
