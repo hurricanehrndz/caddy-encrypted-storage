@@ -8,7 +8,7 @@ The Caddy Encrypted Storage plugin is a storage plugin for Caddy that encrypts a
 Like all other Caddy modules, you can build Caddy with this plugin using `xcaddy`:
 
 ```shell
-xcaddy build --with github.com/mohammed90/caddy-encrypted-storage
+xcaddy build --with github.com/hurricanehrndz/caddy-encrypted-storage
 ```
 
 ## Data Sample
