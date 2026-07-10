@@ -28,12 +28,20 @@ go.work.sum
 # env file
 .env
 
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
 # Editor/IDE
 # .idea/
 # .vscode/
-
-# direnv
-.direnv/
 
 # artifacts
 build/
