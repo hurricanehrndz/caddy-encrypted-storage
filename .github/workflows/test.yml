@@ -64,7 +64,7 @@ jobs:
         run: nix profile add nixpkgs#devenv
       - name: Set up Go
         if: runner.os == 'Windows'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: '.go-version'
           cache: true
