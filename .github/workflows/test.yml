@@ -83,7 +83,7 @@ jobs:
             devenv shell -- go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
           fi
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: integration,${{ runner.os }}
