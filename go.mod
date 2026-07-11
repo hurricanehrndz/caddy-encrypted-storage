@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/caddyserver/caddy/v2 v2.11.2
 	github.com/caddyserver/certmagic v0.25.2
-	github.com/danieljoos/wincred v1.2.2
+	github.com/danieljoos/wincred v1.2.3
 	github.com/getsops/sops/v3 v3.12.2
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.80.0
