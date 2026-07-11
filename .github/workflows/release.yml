@@ -26,7 +26,7 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
       - name: Generate changelog
         id: changelog
-        uses: metcalfc/changelog-generator@v4.6.2
+        uses: metcalfc/changelog-generator@v4.7.0
         with:
           myToken: ${{ secrets.PULL_TOKEN }}
       - name: Create Release
