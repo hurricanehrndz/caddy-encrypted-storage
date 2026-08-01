@@ -9,7 +9,7 @@ require (
 	github.com/danieljoos/wincred v1.2.3
 	github.com/getsops/sops/v3 v3.12.2
 	go.uber.org/zap v1.28.0
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 )
 
 require (
