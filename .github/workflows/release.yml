@@ -28,7 +28,7 @@ jobs:
         id: changelog
         uses: metcalfc/changelog-generator@v5.0.1
         with:
-          myToken: ${{ secrets.PULL_TOKEN }}
+          myToken: ${{ secrets.GITHUB_TOKEN }}
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -54,4 +54,4 @@ jobs:
           draft: false
           prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
